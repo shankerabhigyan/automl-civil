@@ -1,18 +1,17 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 class SelfAttention(nn.Module):
-    def __init__(self, feature_dim):
+    def __init__(self, feature_dim, attention_dim=64):
         super().__init__()
         self.attention = nn.Sequential(
-            nn.Linear(feature_dim, 64),
+            nn.Linear(feature_dim, attention_dim),
             nn.Tanh(),
-            nn.Linear(64, 1),
+            nn.Linear(attention_dim, 1),
             nn.Softmax(dim=1)
         )
         
@@ -35,169 +34,164 @@ class ANFISLayer(nn.Module):
         self.consequents = nn.Parameter(torch.randn(num_rules, num_features + 1))
         
     def membership_func(self, x):
-        x = x.unsqueeze(2)  # Add dimension for rules
+        x = x.unsqueeze(2)
         return torch.exp(-(x - self.mu.unsqueeze(0))**2 / (2 * self.sigma.unsqueeze(0)**2))
     
     def forward(self, x):
-        # Calculate membership degrees
         membership_values = self.membership_func(x)
-        
-        # Calculate firing strengths
         firing_strengths = torch.prod(membership_values, dim=1)
         normalized_firing_strengths = firing_strengths / (torch.sum(firing_strengths, dim=1, keepdim=True) + 1e-10)
         
-        # Calculate consequent outputs
-    
         x_aug = torch.cat([x, torch.ones(x.shape[0], 1, device=x.device)], dim=1)
         consequent_outputs = torch.matmul(x_aug, self.consequents.t())
         
-        # Calculate final output
         output = torch.sum(normalized_firing_strengths * consequent_outputs, dim=1)
         return output.unsqueeze(1)
 
-class HybridModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64):
+class DynamicMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims, dropout_rate=0.0):
         super().__init__()
-        self.attention = SelfAttention(input_dim)
-        self.anfis = ANFISLayer(input_dim)
         
-        self.ann = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
+        layers = []
+        prev_dim = input_dim
         
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout_rate)
+            ])
+            prev_dim = hidden_dim
+            
+        layers.append(nn.Linear(prev_dim, 1))
+        self.mlp = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.mlp(x)
+
+class HybridModel(nn.Module):
+    def __init__(self, input_dim, hidden_dims=[256, 128], 
+                 use_attention=True, attention_dim=64,
+                 num_rules=5, dropout_rate=0.0):
+        super().__init__()
+        
+        self.use_attention = use_attention
+        if use_attention:
+            self.attention = SelfAttention(input_dim, attention_dim)
+        
+        self.anfis = ANFISLayer(input_dim, num_rules)
+        self.ann = DynamicMLP(input_dim, hidden_dims, dropout_rate)
         self.combine = nn.Linear(2, 1)
         
     def forward(self, x):
-        # Apply self-attention
-        attended_features, attention_weights = self.attention(x)
+        if self.use_attention:
+            attended_features, attention_weights = self.attention(x)
+        else:
+            attended_features = x
+            attention_weights = None
         
-        # ANFIS path
         anfis_out = self.anfis(attended_features)
-        
-        # ANN path
         ann_out = self.ann(attended_features)
         
-        # Combine predictions
         combined = torch.cat([anfis_out, ann_out], dim=1)
         final_output = self.combine(combined)
         
         return final_output, attention_weights
 
-class FeatureSelector:
-    def __init__(self, input_dim):
-        self.input_dim = input_dim
-        self.importance_scores = None
-        
-    def fit(self, X, y, epochs=10):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = HybridModel(self.input_dim).to(device)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters())
-        
-        X_tensor = torch.FloatTensor(X).to(device)
-        y_tensor = torch.FloatTensor(y).to(device)
-        
-        for epoch in range(epochs):
-            optimizer.zero_grad()
-            outputs, attention_weights = model(X_tensor)
-            loss = criterion(outputs, y_tensor)
-            loss.backward()
-            optimizer.step()
-            
-        # Store feature importance based on attention weights
-        _, attention_weights = model(X_tensor)
-        self.importance_scores = attention_weights.mean(dim=0).cpu().detach().numpy()
-        
-    def select_features(self, threshold=0.1):
-        return self.importance_scores >= threshold
-
-class AutoMLConcrete:
-    def __init__(self, target_column):
+class ANFISPredictor:
+    def __init__(self, target_column, hidden_dims=[256, 128], 
+                 use_attention=True, attention_dim=64,
+                 num_rules=5, dropout_rate=0.0):
         self.target_column = target_column
+        self.hidden_dims = hidden_dims
+        self.use_attention = use_attention
+        self.attention_dim = attention_dim
+        self.num_rules = num_rules
+        self.dropout_rate = dropout_rate
+        
         self.scaler_X = MinMaxScaler()
         self.scaler_y = MinMaxScaler()
-        self.feature_selector = None
         self.model = None
-        self.selected_features = None
         
     def preprocess_data(self, data):
         X = data.drop(columns=[self.target_column])
         y = data[self.target_column].values.reshape(-1, 1)
         
-        # Scale features and target
         X_scaled = self.scaler_X.fit_transform(X)
         y_scaled = self.scaler_y.fit_transform(y)
         
         return X_scaled, y_scaled
         
-    def fit(self, data, epochs=100):
+    def fit(self, data, epochs=100, batch_size=32, learning_rate=0.001):
         X_scaled, y_scaled = self.preprocess_data(data)
         
-        # Feature selection using NAS
-        self.feature_selector = FeatureSelector(X_scaled.shape[1])
-        self.feature_selector.fit(X_scaled, y_scaled)
-        self.selected_features = self.feature_selector.select_features()
-        
-        # Train final model using selected features
-        X_selected = X_scaled[:, self.selected_features]
-        self.model = HybridModel(X_selected.shape[1])
+        # Initialize model
+        self.model = HybridModel(
+            input_dim=X_scaled.shape[1],
+            hidden_dims=self.hidden_dims,
+            use_attention=self.use_attention,
+            attention_dim=self.attention_dim,
+            num_rules=self.num_rules,
+            dropout_rate=self.dropout_rate
+        )
         
         # Convert to PyTorch tensors
-        X_tensor = torch.FloatTensor(X_selected)
+        X_tensor = torch.FloatTensor(X_scaled)
         y_tensor = torch.FloatTensor(y_scaled)
         
-        # Training loop
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.model.parameters())
+        # Create data loader
+        dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
+        # Training setup
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        
+        # Training loop
         for epoch in range(epochs):
-            optimizer.zero_grad()
-            outputs, _ = self.model(X_tensor)
-            loss = criterion(outputs, y_tensor)
-            loss.backward()
-            optimizer.step()
+            total_loss = 0
+            for batch_X, batch_y in dataloader:
+                optimizer.zero_grad()
+                outputs, _ = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
             
             if (epoch + 1) % 10 == 0:
-                print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+                avg_loss = total_loss / len(dataloader)
+                print(f'Epoch [{epoch+1}/{epochs}], Average Loss: {avg_loss:.4f}')
                 
     def predict(self, data):
         X = data.drop(columns=[self.target_column])
         X_scaled = self.scaler_X.transform(X)
-        X_selected = X_scaled[:, self.selected_features]
         
-        X_tensor = torch.FloatTensor(X_selected)
+        X_tensor = torch.FloatTensor(X_scaled)
         with torch.no_grad():
             predictions, _ = self.model(X_tensor)
         
-        # Inverse transform predictions
         return self.scaler_y.inverse_transform(predictions.numpy())
 
 # Example usage:
 if __name__ == "__main__":
-    # # Generate synthetic data
-    # np.random.seed(42)
-    # n_samples = 1000
-    # n_features = 10
-    
-    # X = np.random.randn(n_samples, n_features)
-    # y = 3*X[:, 0] + 2*X[:, 1] - X[:, 2] + np.random.randn(n_samples)*0.1
-    
-    # # Create DataFrame
-    # data = pd.DataFrame(X, columns=[f'feature_{i}' for i in range(n_features)])
-    # data['target'] = y
-    
-    path = "../data/concrete/Concrete_Data_Yeh.csv"
+    # Load data
+    path = "Concrete_Data_Yeh.csv"
     data = pd.read_csv(path)
     target = 'csMPa'
     
-    # Initialize and train model
-    automl = AutoMLConcrete(target_column=target)
-    automl.fit(data)
+    # Initialize and train model with custom parameters
+    model = ANFISPredictor(
+        target_column=target,
+        hidden_dims=[256, 128, 64],  # Custom architecture
+        use_attention=True,          # Enable self-attention
+        attention_dim=32,            # Custom attention dimension
+        num_rules=7,                 # Custom number of ANFIS rules
+        dropout_rate=0.2            # Add dropout for regularization
+    )
+    
+    # Train the model
+    model.fit(data, epochs=100, batch_size=32, learning_rate=0.001)
     
     # Make predictions
-    predictions = automl.predict(data)
+    predictions = model.predict(data)
     print("Predictions shape:", predictions.shape)
