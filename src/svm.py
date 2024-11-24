@@ -74,6 +74,7 @@ class SVMModel(nn.Module):
         self.kernel = KernelLayer(kernel_type, kernel_params)
         self.alpha = nn.Parameter(torch.zeros(1))  # Will be expanded during training
         self.bias = nn.Parameter(torch.zeros(1))
+        self.support_vectors = None
         
     def get_kernel_matrix(self, x: torch.Tensor, support_vectors: Optional[torch.Tensor] = None) -> torch.Tensor:
         if support_vectors is None:
@@ -138,7 +139,7 @@ class SVMNAS:
         # Select initial support vectors (random subset of training data)
         n_support = max(int(X_scaled.shape[0] * support_vector_ratio), 1)
         support_indices = np.random.choice(X_scaled.shape[0], n_support, replace=False)
-        self.support_vectors = torch.FloatTensor(X_scaled[support_indices])
+        
         
         # Initialize model
         self.model = SVMModel(
@@ -149,6 +150,7 @@ class SVMNAS:
             temperature=self.temperature,
             C=self.C
         )
+        self.model.support_vectors = torch.FloatTensor(X_scaled[support_indices])
         
         # Initialize alpha parameter
         self.model.alpha = nn.Parameter(torch.zeros(n_support, 1))
@@ -225,7 +227,7 @@ class SVMNAS:
     
     def get_support_vectors(self) -> np.ndarray:
         """Return the support vectors used by the model"""
-        return self.support_vectors.numpy()
+        return self.model.support_vectors.numpy()
     
     def get_fitness_score(self, data: pd.DataFrame) -> float:
         """

@@ -298,8 +298,9 @@ class CustomXGBoost:
         self.feature_names = model_data['feature_names']
         self.xgb_params = model_data['params']
 
-    def get_fit_score(self):
+    def get_fitness_score(self, data):
         metrics = self.model.evals_result()
+        print(1/metrics['validation_1']['rmse'][-1])
         return 1/metrics['validation_1']['rmse'][-1]
 
 # Example usage:
