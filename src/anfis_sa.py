@@ -171,6 +171,13 @@ class ANFISPredictor:
             predictions, _ = self.model(X_tensor)
         
         return self.scaler_y.inverse_transform(predictions.numpy())
+    
+    def get_fit_score(self, data):
+        pred = self.predict(data)
+        true = data[self.target_column].values
+        score = np.mean((true - pred)**2)   # MSE
+        # return fitness score
+        return 1/(1+score)
 
 # Example usage:
 if __name__ == "__main__":
