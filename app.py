@@ -155,7 +155,14 @@ def plot_model_distribution():
 def plot_feature_importance():
     """Plot feature importance if available"""
     if st.session_state.feature_importance is not None:
-        importance_df = pd.DataFrame(st.session_state.feature_importance)
+        # Convert dictionary to DataFrame
+        importance_df = pd.DataFrame([
+            {"feature": feature, "importance": value}
+            for feature, value in st.session_state.feature_importance.items()
+        ])
+        
+        # Sort by importance value
+        importance_df = importance_df.sort_values("importance", ascending=True)
         
         fig = px.bar(
             importance_df,
@@ -164,6 +171,14 @@ def plot_feature_importance():
             orientation='h',
             title='Feature Importance',
             template='plotly_white'
+        )
+        
+        # Customize layout
+        fig.update_layout(
+            xaxis_title="Importance Score",
+            yaxis_title="Feature",
+            showlegend=False,
+            height=max(400, len(importance_df) * 25)  # Dynamic height based on number of features
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -255,7 +270,7 @@ def main():
     
     init_session_state()
     
-    st.title("Neural Architecture Search Dashboard 🧬")
+    st.title("Neural Architecture Search Dashboard")
     
     # Render sidebar and get data
     data, target_column = render_sidebar()
@@ -288,11 +303,14 @@ def main():
                         st.session_state.model_predictions = best_model.model.predict(data)
                         
                         # Get feature importance if available
-                        if hasattr(best_model.model, 'plot_feature_importance'):
-                            importance = best_model.model.get_feature_importance()
-                            st.session_state.feature_importance = importance
+                        if hasattr(best_model.model, 'get_feature_importance'):
+                            st.session_state.feature_importance = best_model.model.get_feature_importance()
+                        else:
+                            st.session_state.feature_importance = None
                     except Exception as e:
                         st.error(f"Error getting predictions: {str(e)}")
+                        st.session_state.model_predictions = None
+                        st.session_state.feature_importance = None
                 
                 st.success("Optimization completed!")
             

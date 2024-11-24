@@ -244,6 +244,15 @@ class CustomXGBoost:
         
         return metrics
     
+    def get_feature_importance(self) -> Dict[str, float]:
+        """Get feature importance from the trained model."""
+        importance = self.model.feature_importances_
+        return pd.Series(
+            importance,
+            index=self.feature_names,
+            name='Feature Importance'
+        ).sort_values(ascending=False).to_dict()
+    
     def plot_training_progress(self) -> None:
         """Plot training and validation RMSE over training iterations."""
         plt.figure(figsize=(10, 6))
