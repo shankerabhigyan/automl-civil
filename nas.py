@@ -120,11 +120,20 @@ class GeneticOptimizer:
     def initialize_population(self) -> List[ModelGene]:
         population = []
         model_types = ['anfis', 'xgboost']
+        anfiscount = 0
+        xgboostcount = 0
         
         for _ in range(self.population_size):
             model_type = random.choice(model_types)
             params = self.generate_random_params(model_type)
             population.append(ModelGene(model_type, params))
+            if model_type == 'anfis':
+                anfiscount += 1
+            else:
+                xgboostcount += 1
+
+        print(f"Initial Population: {anfiscount} ANFIS, {xgboostcount} XGBoost")
+                
             
         return population
 

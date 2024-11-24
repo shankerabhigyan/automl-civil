@@ -233,6 +233,36 @@ def render_optimization_tab():
         history_df = pd.DataFrame(st.session_state.optimization_history)
         st.dataframe(history_df, use_container_width=True)
 
+def track_generation(self, generation, population):
+    """Track the performance of the current generation"""
+    best_individual = max(population, key=lambda x: x.fitness)
+    avg_fitness = sum(ind.fitness for ind in population) / len(population)
+    
+    # Count models of each type in the current generation
+    model_types = [ind.model_type for ind in population]
+    xgboost_count = model_types.count('xgboost')
+    anfis_count = model_types.count('anfis')
+    
+    generation_info = {
+        'generation': generation,
+        'best_fitness': best_individual.fitness,
+        'avg_fitness': avg_fitness,
+        'best_model_type': best_individual.model_type,
+        'xgboost_count': xgboost_count,
+        'anfis_count': anfis_count,
+        'population_size': len(population)
+    }
+    
+    self.optimization_history.append(generation_info)
+    
+    # Log detailed information
+    print(f"\nGeneration {generation}:")
+    print(f"Best Fitness: {best_individual.fitness:.4f}")
+    print(f"Average Fitness: {avg_fitness:.4f}")
+    print(f"Best Model Type: {best_individual.model_type}")
+    print(f"XGBoost Models: {xgboost_count}")
+    print(f"ANFIS Models: {anfis_count}")
+
 def render_model_comparison_tab():
     """Render the model comparison tab"""
     st.header("Model Comparison")
@@ -241,8 +271,13 @@ def render_model_comparison_tab():
         st.info("Run optimization to see model comparison")
         return
     
-    # Compare different models' performance
+    # Convert history to DataFrame
     history_df = pd.DataFrame(st.session_state.optimization_history)
+    
+    # Show model type distribution
+    st.subheader("Model Type Distribution")
+    model_counts = history_df['best_model_type'].value_counts()
+    st.write(model_counts)
     
     # Box plot of fitness scores by model type
     fig = px.box(
@@ -252,14 +287,71 @@ def render_model_comparison_tab():
         title='Fitness Score Distribution by Model Type',
         template='plotly_white'
     )
+    
+    # Customize the box plot
+    fig.update_layout(
+        xaxis_title="Model Type",
+        yaxis_title="Fitness Score",
+        showlegend=False,
+        height=400
+    )
     st.plotly_chart(fig, use_container_width=True)
     
-    # Performance metrics table
+    # Calculate metrics separately to avoid nested aggregation
+    metrics = []
+    for model_type in history_df['best_model_type'].unique():
+        model_data = history_df[history_df['best_model_type'] == model_type]['best_fitness']
+        metrics.append({
+            'Model Type': model_type,
+            'Mean': model_data.mean(),
+            'Std': model_data.std(),
+            'Min': model_data.min(),
+            'Max': model_data.max(),
+            'Count': len(model_data)
+        })
+    
+    # Create metrics DataFrame
+    metrics_df = pd.DataFrame(metrics).set_index('Model Type')
+    metrics_df = metrics_df.round(4)
+    
+    # Display performance metrics
     st.subheader("Performance Metrics by Model Type")
-    metrics_df = history_df.groupby('best_model_type').agg({
-        'best_fitness': ['mean', 'std', 'min', 'max']
-    }).round(4)
     st.dataframe(metrics_df, use_container_width=True)
+    
+    # Plot model selection across generations
+    st.subheader("Model Selection Across Generations")
+    gen_model_counts = history_df.groupby(['generation', 'best_model_type']).size().unstack(fill_value=0)
+    
+    fig_dist = px.line(
+        gen_model_counts,
+        title='Model Selection Distribution Across Generations',
+        template='plotly_white'
+    )
+    
+    fig_dist.update_layout(
+        xaxis_title="Generation",
+        yaxis_title="Count",
+        height=400
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
+    
+    # Additional statistics
+    st.subheader("Training Statistics")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.metric(
+            "Best Overall Fitness",
+            f"{history_df['best_fitness'].max():.4f}",
+            f"Model: {history_df.loc[history_df['best_fitness'].idxmax(), 'best_model_type']}"
+        )
+    
+    with col2:
+        st.metric(
+            "Average Fitness",
+            f"{history_df['best_fitness'].mean():.4f}",
+            f"Std: {history_df['best_fitness'].std():.4f}"
+        )
 
 def main():
     st.set_page_config(
